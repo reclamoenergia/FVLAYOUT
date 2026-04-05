@@ -1,0 +1,13 @@
+[general]
+name=FV Layout Auto Designer
+qgisMinimumVersion=3.22
+description=Generazione automatica layout planimetrico impianti FV a terra
+version=1.0.0
+author=Codex
+email=dev@example.com
+about=Plugin per generazione preliminare di recinzione, viabilità, aree utili e tavoli FV con ottimizzazione azimuth/shift e filtro pendenza.
+category=Vector
+tracker=https://example.com
+repository=https://example.com
+experimental=False
+deprecated=False
