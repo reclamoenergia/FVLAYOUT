@@ -4,7 +4,14 @@ from dataclasses import dataclass
 from typing import Dict, Tuple
 
 import processing
-from qgis.core import QgsGeometry, QgsPointXY, QgsRaster, QgsRasterLayer, QgsVectorLayer
+from qgis.core import (
+    QgsCoordinateTransform,
+    QgsGeometry,
+    QgsPointXY,
+    QgsProject,
+    QgsRasterLayer,
+    QgsVectorLayer,
+)
 
 from .geometry_utils import make_valid
 
@@ -73,7 +80,20 @@ class TerrainAnalyzer:
         )
         return mask_layer, artifacts
 
-    def filter_installable_by_slope(self, installable_geom: QgsGeometry, slope_mask_layer: QgsVectorLayer):
+    def filter_installable_by_slope(
+        self,
+        installable_geom: QgsGeometry,
+        installable_crs,
+        slope_mask_layer: QgsVectorLayer,
+    ):
+        slope_to_installable = None
+        if installable_crs != slope_mask_layer.crs():
+            slope_to_installable = QgsCoordinateTransform(
+                slope_mask_layer.crs(),
+                installable_crs,
+                QgsProject.instance(),
+            )
+
         allowed = QgsGeometry()
         first = True
         for feat in slope_mask_layer.getFeatures():
@@ -82,6 +102,8 @@ class TerrainAnalyzer:
             g = make_valid(feat.geometry())
             if g.isEmpty():
                 continue
+            if slope_to_installable is not None:
+                g.transform(slope_to_installable)
             allowed = g if first else make_valid(allowed.combine(g))
             first = False
         if first:
@@ -102,9 +124,9 @@ class TerrainAnalyzer:
         for pt in points:
             z = dtm_raster.dataProvider().sample(pt, 1)
             s = slope_raster.dataProvider().sample(pt, 1)
-            if z[1] == QgsRaster.IdentifyFormatValue and z[0] is not None:
+            if z[1] and z[0] is not None:
                 z_vals.append(float(z[0]))
-            if s[1] == QgsRaster.IdentifyFormatValue and s[0] is not None:
+            if s[1] and s[0] is not None:
                 slope_vals.append(float(s[0]))
 
         if not z_vals:
