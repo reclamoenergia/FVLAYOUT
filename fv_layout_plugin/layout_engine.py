@@ -70,9 +70,7 @@ class LayoutEngine:
                 row_union = row_tables[0]
                 for tt in row_tables[1:]:
                     row_union = row_union.combine(tt)
-                row_line = row_union.orientedMinimumBoundingBox().centroid().buffer(
-                    0.01, 4
-                ).boundingBox()
+                row_line = row_union.boundingBox()
                 axis = QgsGeometry.fromPolylineXY(
                     [
                         QgsPointXY(row_line.xMinimum(), y),

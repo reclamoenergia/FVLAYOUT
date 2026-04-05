@@ -64,7 +64,11 @@ class FvLayoutPlugin:
 
             for i, lot in enumerate(prepared, start=1):
                 self.dlg.append_log(f"Lotto {lot.lot_id}: filtro aree con pendenza > soglia")
-                usable = terrain.filter_installable_by_slope(lot.installable_geom, slope_mask)
+                usable = terrain.filter_installable_by_slope(
+                    lot.installable_geom,
+                    lots_layer.crs(),
+                    slope_mask,
+                )
                 if usable.isEmpty():
                     self.dlg.append_log(f"Lotto {lot.lot_id}: nessuna area ammessa dopo filtro pendenza")
                     continue
