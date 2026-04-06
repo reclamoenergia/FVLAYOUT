@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 from typing import Dict, List
 
-from qgis.core import QgsFeatureRequest, QgsGeometry
+from qgis.core import QgsFeatureRequest, QgsGeometry, QgsWkbTypes
 
 from .geometry_utils import dissolve_features, make_valid, polygon_parts, safe_buffer
 
@@ -36,6 +36,48 @@ def build_exclusions_geom(excluded_layer) -> QgsGeometry:
 
 def _offset_inside(geom: QgsGeometry, distance_m: float) -> QgsGeometry:
     return safe_buffer(geom, -abs(distance_m))
+
+
+def polygon_outer_boundary_as_line(geom: QgsGeometry) -> QgsGeometry:
+    if geom is None or geom.isEmpty():
+        return QgsGeometry()
+
+    try:
+        valid_geom = make_valid(geom)
+    except Exception:
+        return QgsGeometry()
+
+    if valid_geom.isEmpty():
+        return QgsGeometry()
+
+    if QgsWkbTypes.geometryType(valid_geom.wkbType()) != QgsWkbTypes.PolygonGeometry:
+        return QgsGeometry()
+
+    outer_rings = []
+    if valid_geom.isMultipart():
+        try:
+            polygons = valid_geom.asMultiPolygon()
+        except Exception:
+            return QgsGeometry()
+        for poly in polygons:
+            if not poly or not poly[0]:
+                continue
+            outer_rings.append(poly[0])
+    else:
+        try:
+            polygon = valid_geom.asPolygon()
+        except Exception:
+            return QgsGeometry()
+        if polygon and polygon[0]:
+            outer_rings.append(polygon[0])
+
+    if not outer_rings:
+        return QgsGeometry()
+
+    if len(outer_rings) == 1:
+        return QgsGeometry.fromPolylineXY(outer_rings[0])
+
+    return QgsGeometry.fromMultiPolylineXY(outer_rings)
 
 
 def prepare_lots(lots_layer, excluded_geom: QgsGeometry, params) -> List[LotPrepared]:
@@ -86,7 +128,7 @@ def prepare_lots(lots_layer, excluded_geom: QgsGeometry, params) -> List[LotPrep
         for piece in kept_parts[1:]:
             merged_installable = make_valid(merged_installable.combine(piece))
 
-        fence_line = make_valid(fence_polygon.boundary())
+        fence_line = make_valid(polygon_outer_boundary_as_line(fence_polygon))
 
         outputs.append(
             LotPrepared(
