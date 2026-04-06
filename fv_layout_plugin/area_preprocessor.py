@@ -90,14 +90,21 @@ def _resolve_lot_id(feat, preferred_field: str = None) -> str:
         if value is None:
             return None
         sval = str(value).strip()
-        return sval if sval else None
+        if not sval:
+            return None
+        if sval.lower() in {"null", "<null>", "none"}:
+            return None
+        return sval
 
     for candidate in [preferred_field, 'id', 'ID']:
         value = _valid(candidate)
         if value is not None:
             return value
 
-    return str(feat.id())
+    fid = feat.id()
+    if fid is not None:
+        return str(fid)
+    return ""
 
 
 def prepare_lots(lots_layer, excluded_geom: QgsGeometry, params) -> List[LotPrepared]:
