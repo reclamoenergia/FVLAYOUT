@@ -114,7 +114,19 @@ class FvLayoutPlugin:
                 self.dlg.append_log(f"Lotto {lot.lot_id}: area utile dopo filtro = {usable.area():.1f} m2")
 
                 self.dlg.append_log(f"Lotto {lot.lot_id}: ottimizzazione azimuth/shift")
-                solution = optimizer.solve(usable, excluded_geom)
+                base_progress = 20 + int(65 * (i - 1) / len(prepared))
+                next_progress = 20 + int(65 * i / len(prepared))
+
+                def _opt_progress(done, total):
+                    if total <= 0:
+                        return
+                    frac = done / float(total)
+                    self.dlg.set_progress(base_progress + int((next_progress - base_progress) * frac))
+
+                def _opt_log(msg):
+                    self.dlg.append_log(f"Lotto {lot.lot_id}: {msg}")
+
+                solution = optimizer.solve(usable, excluded_geom, progress_cb=_opt_progress, log_cb=_opt_log)
 
                 table_payload = []
                 for tb in solution.tables:
