@@ -9,6 +9,7 @@ from qgis.core import (
     QgsField,
     QgsFields,
     QgsFillSymbol,
+    QgsGeometry,
     QgsLineSymbol,
     QgsMarkerSymbol,
     QgsProject,
@@ -19,25 +20,47 @@ from qgis.core import (
 
 def _new_layer(geom: str, crs_authid: str, name: str, fields: QgsFields):
     layer = QgsVectorLayer(f"{geom}?crs={crs_authid}", name, "memory")
+    if not layer.isValid():
+        raise RuntimeError(f"Impossibile creare layer memory {name} con geometria {geom}")
     pr = layer.dataProvider()
     pr.addAttributes(list(fields))
     layer.updateFields()
     return layer
 
 
-def _save_layer(layer: QgsVectorLayer, gpkg_path: str, layer_name: str):
+def _save_layer(layer: QgsVectorLayer, gpkg_path: str, layer_name: str, create_file: bool = False):
     opts = QgsVectorFileWriter.SaveVectorOptions()
     opts.driverName = "GPKG"
     opts.layerName = layer_name
-    opts.actionOnExistingFile = QgsVectorFileWriter.CreateOrOverwriteLayer
-    err, _, _, _ = QgsVectorFileWriter.writeAsVectorFormatV3(
+    opts.actionOnExistingFile = (
+        QgsVectorFileWriter.CreateOrOverwriteFile
+        if create_file
+        else QgsVectorFileWriter.CreateOrOverwriteLayer
+    )
+    err, new_path, error_message, _ = QgsVectorFileWriter.writeAsVectorFormatV3(
         layer,
         gpkg_path,
         QgsProject.instance().transformContext(),
         opts,
     )
     if err != QgsVectorFileWriter.NoError:
-        raise RuntimeError(f"Errore salvataggio layer {layer_name}")
+        raise RuntimeError(
+            f"Errore salvataggio layer {layer_name} "
+            f"(codice={int(err)}, messaggio={error_message!r}, output={new_path!r})"
+        )
+
+
+def _add_features_or_raise(layer: QgsVectorLayer, feats: List[QgsFeature], context: str):
+    ok, added_feats = layer.dataProvider().addFeatures(feats)
+    added_count = len(added_feats) if added_feats is not None else 0
+    expected_count = len(feats)
+    if expected_count == 0:
+        return
+    if not ok or added_count == 0:
+        raise RuntimeError(
+            f"Errore aggiunta feature su layer {layer.name()} ({context}): "
+            f"attese={expected_count}, aggiunte={added_count}"
+        )
 
 
 def _style_layer(layer, kind):
@@ -62,6 +85,8 @@ class OutputWriter:
     def write(self, results: List[Dict]):
         gpkg = os.path.join(self.params.output_dir, f"{self.params.output_prefix}_layout.gpkg")
         csv_path = os.path.join(self.params.output_dir, f"{self.params.output_prefix}_report.csv")
+        if os.path.exists(gpkg):
+            os.remove(gpkg)
 
         fence = self._build_fence(results)
         road = self._build_road(results)
@@ -78,17 +103,24 @@ class OutputWriter:
             (tables, "TAVOLI_FV", "table"),
             (centroids, "TAVOLI_FV_CENTROIDI", "point"),
         ]
-        for lyr, name, kind in mapping:
+        for idx, (lyr, name, kind) in enumerate(mapping):
             _style_layer(lyr, kind)
-            _save_layer(lyr, gpkg, name)
+            _save_layer(lyr, gpkg, name, create_file=(idx == 0))
 
         self._write_report(csv_path, results)
 
         if self.params.add_to_project:
+            failed_to_load = []
             for _, name, _ in mapping:
                 layer = QgsVectorLayer(f"{gpkg}|layername={name}", name, "ogr")
                 if layer.isValid():
                     QgsProject.instance().addMapLayer(layer)
+                else:
+                    failed_to_load.append(name)
+            if failed_to_load:
+                raise RuntimeError(
+                    "Layer salvati ma non caricati nel progetto: " + ", ".join(failed_to_load)
+                )
 
         return {"gpkg": gpkg, "report": csv_path}
 
@@ -96,15 +128,23 @@ class OutputWriter:
         fields = QgsFields()
         fields.append(QgsField("lot_id", QVariant.String))
         fields.append(QgsField("lunghezza_m", QVariant.Double))
-        lyr = _new_layer("LineString", self.crs_authid, "RECINZIONE", fields)
+        lyr = _new_layer("MultiLineString", self.crs_authid, "RECINZIONE", fields)
         feats = []
         for r in results:
             f = QgsFeature(lyr.fields())
             f["lot_id"] = r["lot_id"]
             f["lunghezza_m"] = r["fence_line"].length()
-            f.setGeometry(r["fence_line"])
+            fence_geom = QgsGeometry(r["fence_line"])
+            if fence_geom.isNull():
+                raise RuntimeError(f"Geometria recinzione nulla per lotto {r['lot_id']}")
+            if not fence_geom.isMultipart():
+                if not fence_geom.convertToMultiType():
+                    raise RuntimeError(
+                        f"Impossibile convertire RECINZIONE in MultiLineString per lotto {r['lot_id']}"
+                    )
+            f.setGeometry(fence_geom)
             feats.append(f)
-        lyr.dataProvider().addFeatures(feats)
+        _add_features_or_raise(lyr, feats, "recinzione")
         return lyr
 
     def _build_road(self, results):
@@ -121,7 +161,7 @@ class OutputWriter:
             f["width_m"] = self.params.road_width_m
             f.setGeometry(r["road_geom"])
             feats.append(f)
-        lyr.dataProvider().addFeatures(feats)
+        _add_features_or_raise(lyr, feats, "viabilita_perimetrale")
         return lyr
 
     def _build_usable(self, results):
@@ -142,7 +182,7 @@ class OutputWriter:
             f["usable_flag"] = 1
             f.setGeometry(r["usable_geom"])
             feats.append(f)
-        lyr.dataProvider().addFeatures(feats)
+        _add_features_or_raise(lyr, feats, "aree_installabili")
         return lyr
 
     def _build_rows(self, results):
@@ -169,7 +209,7 @@ class OutputWriter:
                 f["shift_m"] = rr.shift_m
                 f.setGeometry(rr.geom)
                 feats.append(f)
-        lyr.dataProvider().addFeatures(feats)
+        _add_features_or_raise(lyr, feats, "file_fv")
         return lyr
 
     def _build_tables(self, results):
@@ -219,7 +259,7 @@ class OutputWriter:
                 f["valid_flag"] = 1
                 f.setGeometry(tb["geom"])
                 feats.append(f)
-        lyr.dataProvider().addFeatures(feats)
+        _add_features_or_raise(lyr, feats, "tavoli_fv")
         return lyr
 
     def _build_centroids(self, table_layer):
@@ -233,7 +273,7 @@ class OutputWriter:
                 c[fld] = feat[fld]
             c.setGeometry(feat.geometry().centroid())
             feats.append(c)
-        lyr.dataProvider().addFeatures(feats)
+        _add_features_or_raise(lyr, feats, "tavoli_fv_centroidi")
         return lyr
 
     def _write_report(self, csv_path, results):
