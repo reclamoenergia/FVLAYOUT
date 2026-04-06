@@ -153,6 +153,71 @@ class TerrainAnalyzer:
             "slope_mean": (s_sum / valid) if valid else None,
         }
 
+    def _remove_if_exists(self, path: str) -> None:
+        if not path:
+            return
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+
+    def _load_vector_layer_robust(self, path: str, name: str) -> QgsVectorLayer:
+        layer = QgsVectorLayer(path, name, "ogr")
+        if layer.isValid():
+            provider = layer.dataProvider()
+            if provider is not None:
+                for sub in provider.subLayers():
+                    parts = sub.split("!!::!!")
+                    layer_name = parts[1] if len(parts) > 1 else sub
+                    candidate = QgsVectorLayer(f"{path}|layername={layer_name}", f"{name}_{layer_name}", "ogr")
+                    if candidate.isValid():
+                        return candidate
+            return layer
+        if path.lower().endswith(".gpkg"):
+            fallback = QgsVectorLayer(f"{path}|layername=allowed", f"{name}_allowed", "ogr")
+            if fallback.isValid():
+                return fallback
+        return layer
+
+    def _resolve_allowed_field(self, layer: QgsVectorLayer) -> str:
+        fields = layer.fields()
+        preferred = ("ok", "dn", "value", "gridcode")
+        name_map = {f.name().lower(): f.name() for f in fields}
+        numeric_types = {
+            QVariant.Int,
+            QVariant.UInt,
+            QVariant.LongLong,
+            QVariant.ULongLong,
+            QVariant.Double,
+        }
+        int_types = {
+            QVariant.Int,
+            QVariant.UInt,
+            QVariant.LongLong,
+            QVariant.ULongLong,
+        }
+
+        for key in preferred:
+            original_name = name_map.get(key)
+            if original_name is None:
+                continue
+            idx = fields.indexFromName(original_name)
+            if idx >= 0 and fields[idx].type() in numeric_types:
+                return original_name
+
+        for i in range(fields.count()):
+            fld = fields[i]
+            if fld.type() in int_types:
+                return fld.name()
+
+        for i in range(fields.count()):
+            fld = fields[i]
+            if fld.type() in numeric_types:
+                return fld.name()
+
+        return ""
+
     def filter_installable_by_slope(
         self,
         lot_id: str,
@@ -193,6 +258,9 @@ class TerrainAnalyzer:
         clipped_path = os.path.join(self._tmp_dir, f"{self.prefix}_lot_{lot_id}_slope_clip.tif")
         allowed_path = os.path.join(self._tmp_dir, f"{self.prefix}_lot_{lot_id}_slope_allowed.tif")
         allowed_gpkg = os.path.join(self._tmp_dir, f"{self.prefix}_lot_{lot_id}_slope_allowed.gpkg")
+        self._remove_if_exists(clipped_path)
+        self._remove_if_exists(allowed_path)
+        self._remove_if_exists(allowed_gpkg)
 
         processing.run(
             "gdal:cliprasterbymasklayer",
@@ -234,7 +302,7 @@ class TerrainAnalyzer:
             )
 
         expr = f"(A <= {float(slope_limit_deg)}) * 1"
-        processing.run(
+        calc_result = processing.run(
             "gdal:rastercalculator",
             {
                 "INPUT_A": clipped_path,
@@ -247,26 +315,77 @@ class TerrainAnalyzer:
                 "OUTPUT": allowed_path,
             },
         )
+        allowed_raster_path = calc_result.get("OUTPUT", allowed_path)
 
-        processing.run(
-            "gdal:polygonize",
-            {
-                "INPUT": allowed_path,
-                "BAND": 1,
-                "FIELD": "ok",
-                "EIGHT_CONNECTEDNESS": False,
-                "EXTRA": "",
-                "OUTPUT": f"{allowed_gpkg}|layername=allowed",
-            },
-        )
+        try:
+            polygonize_result = processing.run(
+                "gdal:polygonize",
+                {
+                    "INPUT": allowed_raster_path,
+                    "BAND": 1,
+                    "FIELD": "ok",
+                    "EIGHT_CONNECTEDNESS": False,
+                    "EXTRA": "",
+                    "OUTPUT": allowed_gpkg,
+                },
+            )
+        except Exception as exc:
+            return SlopeFilterResult(
+                lot_id,
+                QgsGeometry(),
+                "technical_error",
+                f"polygonize fallito: {exc}",
+                int(stats["valid_pixels"]),
+                stats["slope_min"],
+                stats["slope_max"],
+                stats["slope_mean"],
+            )
 
-        allowed_layer = QgsVectorLayer(f"{allowed_gpkg}|layername=allowed", f"allowed_{lot_id}", "ogr")
+        polygonize_output = polygonize_result.get("OUTPUT", allowed_gpkg)
+        if not polygonize_output or not os.path.exists(polygonize_output):
+            return SlopeFilterResult(
+                lot_id,
+                QgsGeometry(),
+                "technical_error",
+                "output polygonize non trovato",
+                int(stats["valid_pixels"]),
+                stats["slope_min"],
+                stats["slope_max"],
+                stats["slope_mean"],
+            )
+
+        allowed_layer = self._load_vector_layer_robust(polygonize_output, f"allowed_{lot_id}")
         if not allowed_layer.isValid():
             return SlopeFilterResult(
                 lot_id,
                 QgsGeometry(),
                 "technical_error",
-                "maschera slope non generata correttamente",
+                "polygonize completato ma layer non caricabile",
+                int(stats["valid_pixels"]),
+                stats["slope_min"],
+                stats["slope_max"],
+                stats["slope_mean"],
+            )
+
+        if allowed_layer.featureCount() <= 0:
+            return SlopeFilterResult(
+                lot_id,
+                QgsGeometry(),
+                "technical_error",
+                "layer polygonize valido ma privo di feature",
+                int(stats["valid_pixels"]),
+                stats["slope_min"],
+                stats["slope_max"],
+                stats["slope_mean"],
+            )
+
+        allowed_field = self._resolve_allowed_field(allowed_layer)
+        if not allowed_field:
+            return SlopeFilterResult(
+                lot_id,
+                QgsGeometry(),
+                "technical_error",
+                "nessun campo numerico trovato per interpretare la maschera slope",
                 int(stats["valid_pixels"]),
                 stats["slope_min"],
                 stats["slope_max"],
@@ -277,7 +396,8 @@ class TerrainAnalyzer:
         first = True
         for feat in allowed_layer.getFeatures():
             try:
-                ok_val = int(feat["ok"])
+                raw_val = feat[allowed_field]
+                ok_val = int(float(raw_val)) if raw_val is not None else 0
             except Exception:
                 ok_val = 0
             if ok_val != 1:
@@ -293,7 +413,7 @@ class TerrainAnalyzer:
                 lot_id,
                 QgsGeometry(),
                 "too_steep",
-                "tutti i pixel validi superano la soglia di pendenza",
+                "nessun poligono con valore ammesso = 1",
                 int(stats["valid_pixels"]),
                 stats["slope_min"],
                 stats["slope_max"],
