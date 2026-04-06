@@ -80,11 +80,31 @@ def polygon_outer_boundary_as_line(geom: QgsGeometry) -> QgsGeometry:
     return QgsGeometry.fromMultiPolylineXY(outer_rings)
 
 
+def _resolve_lot_id(feat, preferred_field: str = None) -> str:
+    names = feat.fields().names()
+
+    def _valid(field_name):
+        if not field_name or field_name not in names:
+            return None
+        value = feat[field_name]
+        if value is None:
+            return None
+        sval = str(value).strip()
+        return sval if sval else None
+
+    for candidate in [preferred_field, 'id', 'ID']:
+        value = _valid(candidate)
+        if value is not None:
+            return value
+
+    return str(feat.id())
+
+
 def prepare_lots(lots_layer, excluded_geom: QgsGeometry, params) -> List[LotPrepared]:
     outputs = []
     for idx, feat in enumerate(collect_lot_features(lots_layer, params.selected_only), start=1):
         log = []
-        lot_id = str(feat["id"]) if "id" in feat.fields().names() else str(feat.id())
+        lot_id = _resolve_lot_id(feat, getattr(params, 'lot_id_field', None))
         lot_geom = make_valid(feat.geometry())
         if lot_geom.isEmpty():
             log.append("Geometria lotto vuota o invalida: saltato")

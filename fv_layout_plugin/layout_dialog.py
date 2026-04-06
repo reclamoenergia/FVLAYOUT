@@ -22,14 +22,15 @@ from qgis.PyQt.QtWidgets import (
     QSpinBox,
     QVBoxLayout,
 )
-from qgis.core import QgsMapLayerProxyModel, QgsProject, QgsWkbTypes
-from qgis.gui import QgsMapLayerComboBox
+from qgis.core import QgsFieldProxyModel, QgsMapLayerProxyModel, QgsProject, QgsWkbTypes
+from qgis.gui import QgsFieldComboBox, QgsMapLayerComboBox
 
 
 @dataclass
 class FvLayoutParameters:
     lots_layer_id: str
     excluded_layer_id: Optional[str]
+    lot_id_field: Optional[str]
     dtm_layer_id: str
     selected_only: bool
     fence_offset_m: float
@@ -102,8 +103,13 @@ class LayoutDialog(QDialog):
         self.dtm_combo.setFilters(QgsMapLayerProxyModel.RasterLayer)
 
         self.selected_only_chk = QCheckBox("Usa solo elementi selezionati")
+        self.lot_id_field_combo = QgsFieldComboBox()
+        self.lot_id_field_combo.setAllowEmptyFieldName(True)
+        self.lot_id_field_combo.setFilters(QgsFieldProxyModel.String | QgsFieldProxyModel.Int | QgsFieldProxyModel.LongLong)
+        self.lot_id_field_combo.setLayer(self.lots_combo.currentLayer())
 
         lay.addRow("Layer lotti catastali", self.lots_combo)
+        lay.addRow("Campo ID lotto (opzionale)", self.lot_id_field_combo)
         lay.addRow("Layer aree escluse (opzionale)", self.excluded_combo)
         lay.addRow("Raster DTM", self.dtm_combo)
         lay.addRow("", self.selected_only_chk)
@@ -121,7 +127,7 @@ class LayoutDialog(QDialog):
         lay.addRow("Distanza recinzione dal confine (m)", self.fence_offset)
         lay.addRow("Larghezza viabilità perimetrale (m)", self.road_width)
         lay.addRow("Distanza minima moduli da viabilità (m)", self.module_clearance)
-        lay.addRow("Soglia massima pendenza (°)", self.slope_limit)
+        lay.addRow("Soglia massima pendenza (gradi)", self.slope_limit)
         return group
 
     def _build_structure_group(self):
@@ -221,6 +227,7 @@ class LayoutDialog(QDialog):
 
     def _wire_signals(self):
         self.output_dir_btn.clicked.connect(self._choose_output_dir)
+        self.lots_combo.layerChanged.connect(self._on_lots_layer_changed)
         self.shift_mode_combo.currentIndexChanged.connect(self._toggle_shift_controls)
         self._toggle_shift_controls()
 
@@ -236,6 +243,9 @@ class LayoutDialog(QDialog):
         self.shift_max.setEnabled(optimized)
         self.shift_step.setEnabled(optimized)
         self.shift_value.setEnabled(mode == self.SHIFT_ALTERNATED)
+
+    def _on_lots_layer_changed(self, layer):
+        self.lot_id_field_combo.setLayer(layer)
 
     def append_log(self, message: str):
         self.log_box.appendPlainText(message)
@@ -279,6 +289,7 @@ class LayoutDialog(QDialog):
         return FvLayoutParameters(
             lots_layer_id=lots.id(),
             excluded_layer_id=excluded.id() if excluded else None,
+            lot_id_field=self.lot_id_field_combo.currentField() or None,
             dtm_layer_id=dtm.id(),
             selected_only=self.selected_only_chk.isChecked(),
             fence_offset_m=self.fence_offset.value(),

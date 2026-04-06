@@ -56,22 +56,62 @@ class FvLayoutPlugin:
             self.dlg.set_progress(15)
             self.dlg.append_log("Analisi pendenza da DTM…")
             terrain = TerrainAnalyzer(dtm_layer, params.output_dir, params.output_prefix)
-            slope_mask, artifacts = terrain.build_slope_mask_polygon(params.slope_limit_deg)
-            slope_raster = QgsRasterLayer(artifacts.slope_raster_path, "slope")
+
+            crs_check = terrain.validate_crs_and_overlap(lots_layer)
+            if not crs_check.get("ok"):
+                QMessageBox.critical(self.dlg, "Errore CRS/overlap", crs_check.get("message", "Errore di coerenza CRS"))
+                self.dlg.append_log(crs_check.get("message", "Errore di coerenza CRS"))
+                return
+
+            self.dlg.append_log(f"CRS lotti: {crs_check['lots_crs']}")
+            self.dlg.append_log(f"CRS DTM: {crs_check['dtm_crs']}")
+            self.dlg.append_log(f"Extent lotti: {crs_check['lots_extent']}")
+            self.dlg.append_log(f"Extent DTM: {crs_check['dtm_extent']}")
+            self.dlg.append_log(f"Soglia pendenza configurata: {params.slope_limit_deg:.2f} gradi")
+
+            artifacts = terrain.build_slope_raster()
+            slope_raster = QgsRasterLayer(artifacts.slope_raster_path, "slope_deg")
+            if not slope_raster.isValid():
+                raise RuntimeError("Raster slope non valido: generazione da DTM fallita")
 
             optimizer = LayoutOptimizer(params)
             results = []
 
             for i, lot in enumerate(prepared, start=1):
-                self.dlg.append_log(f"Lotto {lot.lot_id}: filtro aree con pendenza > soglia")
-                usable = terrain.filter_installable_by_slope(
-                    lot.installable_geom,
-                    lots_layer.crs(),
-                    slope_mask,
+                self.dlg.append_log(f"Lotto {lot.lot_id}: filtro pendenza avviato")
+                self.dlg.append_log(f"Lotto {lot.lot_id}: area lotto iniziale = {lot.area_catastale_m2:.1f} m2")
+                self.dlg.append_log(f"Lotto {lot.lot_id}: area utile prima filtro = {lot.installable_geom.area():.1f} m2")
+                self.dlg.append_log(f"Lotto {lot.lot_id}: soglia = {params.slope_limit_deg:.1f} gradi")
+                self.dlg.append_log(f"Lotto {lot.lot_id}: unità pendenza = gradi")
+
+                slope_result = terrain.filter_installable_by_slope(
+                    lot_id=lot.lot_id,
+                    lot_geom=lot.lot_geom,
+                    installable_geom=lot.installable_geom,
+                    installable_crs=lots_layer.crs(),
+                    slope_raster=slope_raster,
+                    slope_limit_deg=params.slope_limit_deg,
                 )
-                if usable.isEmpty():
-                    self.dlg.append_log(f"Lotto {lot.lot_id}: nessuna area ammessa dopo filtro pendenza")
+
+                if slope_result.valid_pixels > 0:
+                    self.dlg.append_log(f"Lotto {lot.lot_id}: pixel validi slope = {slope_result.valid_pixels}")
+                    self.dlg.append_log(
+                        f"Lotto {lot.lot_id}: slope min/max/mean = "
+                        f"{slope_result.slope_min:.2f} / {slope_result.slope_max:.2f} / {slope_result.slope_mean:.2f}"
+                    )
+                else:
+                    self.dlg.append_log(f"Lotto {lot.lot_id}: nessun pixel slope valido nel lotto")
+
+                if slope_result.status == "technical_error":
+                    self.dlg.append_log(f"Lotto {lot.lot_id}: lotto saltato per errore tecnico analisi raster ({slope_result.reason})")
                     continue
+
+                usable = slope_result.usable_geom
+                if usable.isEmpty():
+                    self.dlg.append_log(f"Lotto {lot.lot_id}: escluso per pendenza reale ({slope_result.reason})")
+                    continue
+
+                self.dlg.append_log(f"Lotto {lot.lot_id}: area utile dopo filtro = {usable.area():.1f} m2")
 
                 self.dlg.append_log(f"Lotto {lot.lot_id}: ottimizzazione azimuth/shift")
                 solution = optimizer.solve(usable, excluded_geom)
