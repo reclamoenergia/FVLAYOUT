@@ -1,11 +1,8 @@
 # -*- coding: utf-8 -*-
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import List
 
 from qgis.core import QgsGeometry, QgsPointXY, QgsRectangle
-
-from .geometry_utils import make_valid, polygon_parts
-
 
 @dataclass
 class RowResult:
@@ -39,9 +36,16 @@ class LayoutEngine:
         table_wid = self.params.table_width_m
         table_gap = self.params.table_spacing_m
 
+        # Guard-rail: parametri geometrici incoerenti => nessuna soluzione.
+        if row_pitch < table_wid or table_gap < 0:
+            return [], []
+
+        # Filtro rapido: se il bbox ruotato non contiene nemmeno un tavolo, evita loop inutili.
+        if bb.width() < table_len or bb.height() < table_wid:
+            return [], []
+
         rows: List[RowResult] = []
         tables: List[TableResult] = []
-        occupied: List[QgsGeometry] = []
 
         row_index = 0
         y = bb.yMinimum() + table_wid / 2.0
@@ -60,10 +64,7 @@ class LayoutEngine:
                 )
                 table_geom = QgsGeometry.fromRect(rect)
                 if rotated_area.contains(table_geom):
-                    overlap = any(table_geom.intersects(o) for o in occupied)
-                    if not overlap:
-                        row_tables.append(table_geom)
-                        occupied.append(table_geom)
+                    row_tables.append(table_geom)
                 x += table_len + table_gap
 
             if row_tables:
