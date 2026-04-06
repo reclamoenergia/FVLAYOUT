@@ -289,7 +289,10 @@ class OutputWriter:
             "numero_moduli",
             "potenza_totale_kw",
             "azimuth_ottimo",
-            "shift_ottimo",
+            "shift_mode",
+            "shift_min_m",
+            "shift_max_m",
+            "shift_mean_m",
         ]
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             wr = csv.DictWriter(f, fieldnames=fields)
@@ -309,6 +312,9 @@ class OutputWriter:
                         "numero_moduli": nt * self.params.modules_per_table,
                         "potenza_totale_kw": nt * self.params.table_power_kw,
                         "azimuth_ottimo": r["azimuth"],
-                        "shift_ottimo": r["shift"],
+                        "shift_mode": r.get("shift_mode", "none"),
+                        "shift_min_m": r.get("shift_min_m", 0.0),
+                        "shift_max_m": r.get("shift_max_m", 0.0),
+                        "shift_mean_m": r.get("shift_mean_m", 0.0),
                     }
                 )

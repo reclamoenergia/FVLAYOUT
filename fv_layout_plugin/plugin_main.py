@@ -113,7 +113,7 @@ class FvLayoutPlugin:
 
                 self.dlg.append_log(f"Lotto {lot.lot_id}: area utile dopo filtro = {usable.area():.1f} m2")
 
-                self.dlg.append_log(f"Lotto {lot.lot_id}: ottimizzazione azimuth/shift")
+                self.dlg.append_log(f"Lotto {lot.lot_id}: ottimizzazione azimuth")
                 base_progress = 20 + int(65 * (i - 1) / len(prepared))
                 next_progress = 20 + int(65 * i / len(prepared))
 
@@ -151,7 +151,10 @@ class FvLayoutPlugin:
                         "rows": solution.rows,
                         "tables": table_payload,
                         "azimuth": solution.azimuth,
-                        "shift": solution.shift,
+                        "shift_mode": "row_local_optimized" if params.shift_mode == "optimized" else params.shift_mode,
+                        "shift_min_m": solution.shift_min_m,
+                        "shift_max_m": solution.shift_max_m,
+                        "shift_mean_m": solution.shift_mean_m,
                         "stats": {
                             "area_catastale_m2": lot.area_catastale_m2,
                             "area_esclusa_m2": lot.area_esclusa_m2,
